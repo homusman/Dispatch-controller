@@ -12,6 +12,8 @@ SENSORS = (
     ("tesla_plan_w", "HAEO Tesla power", "W"),
     ("leaf_command_w", "Solis command", "W"),
     ("tesla_command_w", "Fronius command", "W"),
+    ("tesla_write_status", "Fronius write status", None),
+    ("tesla_write_time", "Fronius last write time", None),
 )
 async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities([DispatchSensor(entry.runtime_data, *args) for args in SENSORS])
