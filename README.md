@@ -1,6 +1,6 @@
 # HAEO Dispatch Controller
 
-**v0.2.1 — HAEO owns the economic decisions.** This custom HACS integration translates HAEO battery power targets into Solis and Fronius commands. It does **not** implement proportional grid feedback, battery reallocation, or a second optimization loop.
+**v0.2.2 — HAEO owns the economic decisions.** This custom HACS integration translates HAEO battery power targets into Solis and Fronius commands. It does **not** implement proportional grid feedback, battery reallocation, or a second optimization loop.
 
 ## How it works
 
@@ -29,6 +29,10 @@ Configure these 12 entity mappings:
 
 Example HAEO sensor IDs (assuming the elements are named Grid, Leaf and Tesla): `sensor.grid_active_power`, `sensor.leaf_active_power`, `sensor.tesla_active_power`. Choose actual IDs rather than guessing.
 
+## Editing configuration
+
+Home Assistant → Settings → Devices & services → HAEO Dispatch Controller → **Configure**. The options flow lets you change all sensor mappings, sign conventions and actuator entities after installation. Settings changes reload the integration in shadow mode; **Dispatch enabled** must be turned on again explicitly. Do not confuse the hub/device screen with the integration entry's Configure button.
+
 ## Controls and diagnostics
 
 - **Dispatch enabled** switch: **OFF on startup**; no inverter commands until explicitly enabled.
@@ -37,6 +41,8 @@ Example HAEO sensor IDs (assuming the elements are named Grid, Leaf and Tesla): 
 - **HAEO grid target / Leaf power / Tesla power** sensors: plan inputs in W.
 - **Measured grid power / Grid tracking error**: **diagnostic only**. Grid error never modifies commands.
 - **Solis command / Fronius command**: last dispatch requested; Unknown in shadow mode until a command is issued.
+
+**v0.2.2 diagnosis:** The Fronius limited target and limiting reason show the actual value after the actuator min/max and SoC interlocks. When a nonzero HAEO Tesla plan clips to zero, the controller now reports a descriptive **Error** rather than silently treating zero as the planned command. Fail-safe 0W hold is attempted once, not repeated every 20 seconds. This intentionally disables the invalid target until the mapping, limits, or SoC readings are corrected. Use the Fronius actuator value and Self-Use switch-state sensors to distinguish the issued command from the inverter response.
 
 **v0.2.1 Fronius fix:** On transition into Self-use or Arbitrage (including the first enable), the controller explicitly sends Tesla's HAEO setpoint even if the Home Assistant Number entity already reports it. This addresses cases where the displayed actuator value did not guarantee that a command was transmitted following a mode change. The new **Fronius write status** and **Fronius last write time** diagnostic sensors show the last service-call decision. An accepted Home Assistant service call does not prove the inverter acted: compare the measured battery power. Normal steady-state reconciliation still skips unchanged values to avoid unnecessary writes.
 
