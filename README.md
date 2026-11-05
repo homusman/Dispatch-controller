@@ -1,6 +1,6 @@
 # HAEO Dispatch Controller
 
-**v0.2.0 — HAEO owns the economic decisions.** This custom HACS integration translates HAEO battery power targets into Solis and Fronius commands. It does **not** implement proportional grid feedback, battery reallocation, or a second optimization loop.
+**v0.2.1 — HAEO owns the economic decisions.** This custom HACS integration translates HAEO battery power targets into Solis and Fronius commands. It does **not** implement proportional grid feedback, battery reallocation, or a second optimization loop.
 
 ## How it works
 
@@ -37,6 +37,8 @@ Example HAEO sensor IDs (assuming the elements are named Grid, Leaf and Tesla): 
 - **HAEO grid target / Leaf power / Tesla power** sensors: plan inputs in W.
 - **Measured grid power / Grid tracking error**: **diagnostic only**. Grid error never modifies commands.
 - **Solis command / Fronius command**: last dispatch requested; Unknown in shadow mode until a command is issued.
+
+**v0.2.1 Fronius fix:** On transition into Self-use or Arbitrage (including the first enable), the controller explicitly sends Tesla's HAEO setpoint even if the Home Assistant Number entity already reports it. This addresses cases where the displayed actuator value did not guarantee that a command was transmitted following a mode change. The new **Fronius write status** and **Fronius last write time** diagnostic sensors show the last service-call decision. An accepted Home Assistant service call does not prove the inverter acted: compare the measured battery power. Normal steady-state reconciliation still skips unchanged values to avoid unnecessary writes.
 
 A 20-second check is retained to catch mode changes and recover from missed state events; it does not calculate a grid-error power correction. The older gain, max-feedback-adjustment, max-command-step, and battery-priority entities are removed in v0.2.0. Home Assistant may retain their entity-registry entries marked unavailable; they can be deleted manually after updating.
 
