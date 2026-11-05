@@ -1,4 +1,4 @@
-"""Translate HAEO current power plans into bounded inverter dispatch commands."""
+"""Execute HAEO power plans without a competing feedback controller."""
 from __future__ import annotations
 
 import asyncio
@@ -18,17 +18,13 @@ def clamp(value, low, high):
     return max(low, min(high, value))
 
 class DispatchCoordinator:
-    """Read the current HAEO setpoints and apply a bounded feedback adjustment."""
+    """Translate optimized setpoints to physical inverter commands."""
 
     def __init__(self, hass: HomeAssistant, entry):
         self.hass = hass
         self.entry = entry
         self.config = entry.data
         self.enabled = False  # An explicit action is required before any writes.
-        self.max_adjust_w = 500
-        self.gain = 0.30
-        self.max_step_w = 500
-        self.priority = "Leaf first"
         self.mode = "Disabled"
         self.status = "Observation only; dispatch disabled"
         self.grid_target_w = None
@@ -154,33 +150,13 @@ class DispatchCoordinator:
             target = 0
         return int(round(target / 10) * 10)
 
-    def _add_feedback(self, leaf, tesla, correction):
-        if self.priority == "Tesla first":
-            order = ["tesla", "leaf"]
-        elif self.priority == "SoC headroom":
-            leaf_soc = self._raw("leaf_soc")[1]
-            tesla_soc = self._raw("tesla_soc")[1]
-            if correction >= 0:
-                order = ["leaf", "tesla"] if leaf_soc >= tesla_soc else ["tesla", "leaf"]
-            else:
-                order = ["leaf", "tesla"] if leaf_soc <= tesla_soc else ["tesla", "leaf"]
-        else:
-            order = ["leaf", "tesla"]
-        targets = {"leaf": leaf, "tesla": tesla}
-        remaining = correction
-        for which in order:
-            original = targets[which]
-            candidate = self._limits(which, original + remaining)
-            targets[which] = candidate
-            remaining -= candidate - original
-        return targets["leaf"], targets["tesla"]
-
     async def _call(self, domain, service, entity_id, **data):
         await self.hass.services.async_call(
             domain, service, {"entity_id": entity_id, **data}, blocking=True
         )
 
     async def _dispatch(self, which, target, forced=True):
+        """Write only actual HAEO setpoints, never a grid-error correction."""
         number = self.config[which + "_number"]
         switch = self.config[which + "_switch"]
         state = self.hass.states.get(switch)
@@ -189,25 +165,25 @@ class DispatchCoordinator:
         if not forced:
             if state.state != "on":
                 await self._call("switch", "turn_on", switch)
+            if which == "leaf":
+                self.leaf_command_w = None  # Hardware self-use, not a W setpoint.
+            else:
+                self.tesla_command_w = None
             return
+
         target = self._limits(which, target)
         if state.state == "on":
-            # Stage a safe 0W before disabling hardware self-use, then ramp.
+            # Stage zero before leaving self-use. This prevents replaying
+            # a previously stored power command during the mode transition.
             await self._call("number", "set_value", number, value=0)
             await self._call("switch", "turn_off", switch)
-            previous = 0
-        else:
-            previous = self.leaf_command_w if which == "leaf" else self.tesla_command_w
-            if previous is None:
-                previous = self._raw_power_state(number)
-        adjusted = clamp(target, previous - self.max_step_w, previous + self.max_step_w)
-        adjusted = int(round(adjusted / 10) * 10)
-        if abs(adjusted - self._raw_power_state(number)) >= 10:
-            await self._call("number", "set_value", number, value=adjusted)
+        current = self._raw_power_state(number)
+        if abs(target - current) >= 10:
+            await self._call("number", "set_value", number, value=target)
         if which == "leaf":
-            self.leaf_command_w = adjusted
+            self.leaf_command_w = target
         else:
-            self.tesla_command_w = adjusted
+            self.tesla_command_w = target
 
     def _raw_power_state(self, entity_id):
         state = self.hass.states.get(entity_id)
@@ -258,38 +234,24 @@ class DispatchCoordinator:
                     self.tesla_command_w = 0
                 elif proposed == "Self-use":
                     self._safe_stop_attempted = False
-                    # Solis responds to load instantly. Fronius baseload follows
-                    # Tesla's HAEO target, corrected only for residual GRID error.
-                    # Positive grid error (+actual import vs HAEO target)
-                    # means increase Fronius discharge / reduce charging.
-                    # Do not chase Solis power: it can deviate intentionally.
-                    correction = clamp(
-                        self.gain * self.grid_error_w,
-                        -self.max_adjust_w, self.max_adjust_w
-                    )
-                    target = self._limits("tesla", tesla + correction)
+                    # Solis balances rapid load changes in hardware.
+                    # Fronius follows its optimized HAEO Tesla baseload.
                     await self._dispatch("leaf", 0, forced=False)
-                    await self._dispatch("tesla", target)
+                    await self._dispatch("tesla", tesla)
                     self._current_mode = proposed
                     self.status = (
-                        f"Self-use: Solis native; Fronius follows {tesla:.0f}W "
-                        f"Tesla plan; grid correction {correction:+.0f}W"
+                        f"Self-use: Solis hardware loop; Fronius tracks HAEO "
+                        f"Tesla target {tesla:.0f} W; no feedback corrections"
                     )
                 else:
                     self._safe_stop_attempted = False
-                    correction = clamp(
-                        self.gain * self.grid_error_w,
-                        -self.max_adjust_w, self.max_adjust_w
-                    )
-                    target_leaf, target_tesla = self._add_feedback(
-                        leaf, tesla, correction
-                    )
-                    await self._dispatch("leaf", target_leaf)
-                    await self._dispatch("tesla", target_tesla)
+                    # Economic allocation belongs entirely to HAEO.
+                    await self._dispatch("leaf", leaf)
+                    await self._dispatch("tesla", tesla)
                     self._current_mode = proposed
                     self.status = (
-                        f"Arbitrage: HAEO plans {leaf:.0f}/{tesla:.0f}W; "
-                        f"grid correction {correction:+.0f}W; priority {self.priority}"
+                        f"Arbitrage: following HAEO Leaf {leaf:.0f} W / "
+                        f"Tesla {tesla:.0f} W; no feedback corrections"
                     )
             except Exception as exc:
                 _LOGGER.warning("HAEO dispatch tick failed: %s", exc)
