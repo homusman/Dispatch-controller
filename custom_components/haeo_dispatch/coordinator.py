@@ -259,10 +259,12 @@ class DispatchCoordinator:
                 elif proposed == "Self-use":
                     self._safe_stop_attempted = False
                     # Solis responds to load instantly. Fronius baseload follows
-                    # Tesla's planned battery power, not a default of Solis=0.
-                    # Compensate only a bounded share of Leaf's deviation.
+                    # Tesla's HAEO target, corrected only for residual GRID error.
+                    # Positive grid error (+actual import vs HAEO target)
+                    # means increase Fronius discharge / reduce charging.
+                    # Do not chase Solis power: it can deviate intentionally.
                     correction = clamp(
-                        self.gain * (leaf - actual_leaf),
+                        self.gain * self.grid_error_w,
                         -self.max_adjust_w, self.max_adjust_w
                     )
                     target = self._limits("tesla", tesla + correction)
@@ -271,7 +273,7 @@ class DispatchCoordinator:
                     self._current_mode = proposed
                     self.status = (
                         f"Self-use: Solis native; Fronius follows {tesla:.0f}W "
-                        f"Tesla plan; correction {correction:+.0f}W"
+                        f"Tesla plan; grid correction {correction:+.0f}W"
                     )
                 else:
                     self._safe_stop_attempted = False
