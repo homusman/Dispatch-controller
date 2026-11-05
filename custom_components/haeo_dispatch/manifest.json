@@ -1,7 +1,7 @@
 {
   "domain": "haeo_dispatch",
   "name": "HAEO Dispatch Controller",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "documentation": "https://github.com/homusman/Dispatch-controller",
   "issue_tracker": "https://github.com/homusman/Dispatch-controller/issues",
   "codeowners": [
