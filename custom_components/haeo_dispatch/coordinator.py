@@ -171,13 +171,28 @@ class DispatchCoordinator:
             self.leaf_limit_reason = reason
         return target
 
-    def _clamp_summary(self):
-        notes = []
-        if self.leaf_limit_reason not in ("None", "Not evaluated"):
-            notes.append(f"Leaf: {self.leaf_limit_reason}")
-        if self.tesla_limit_reason not in ("None", "Not evaluated"):
-            notes.append(f"Tesla: {self.tesla_limit_reason}")
-        return f"; CLAMPED: {'; '.join(notes)}" if notes else ""
+    def _decision_summary(self, mode, leaf, tesla):
+        """Concise plan/status shared by shadow and actual dispatch."""
+        if mode == "Hold":
+            return "Hold | Leaf 0 W | Tesla 0 W"
+        if mode == "Self-use":
+            parts = ["Self-use", "Solis auto"]
+            self.leaf_limit_reason = "None"
+        else:
+            parts = ["Arbitrage"]
+            leaf_target = self._limits("leaf", leaf)
+            parts.append(f"Leaf {leaf_target:+.0f} W")
+        tesla_target = self._limits("tesla", tesla)
+        parts.append(f"Tesla {tesla_target:+.0f} W")
+        if mode == "Arbitrage" and self.leaf_limit_reason != "None":
+            parts.append(
+                f"CLAMP Leaf {leaf:+.0f}→{leaf_target:+.0f} W"
+            )
+        if self.tesla_limit_reason != "None":
+            parts.append(
+                f"CLAMP Tesla {tesla:+.0f}→{tesla_target:+.0f} W"
+            )
+        return " | ".join(parts)
 
     async def _call(self, domain, service, entity_id, **data):
         await self.hass.services.async_call(
@@ -278,22 +293,16 @@ class DispatchCoordinator:
             try:
                 grid, leaf, tesla, actual_leaf, _actual_tesla = self._read_inputs()
                 proposed = self._select_mode(grid, leaf, tesla)
-                self.tesla_switch_state = self.hass.states.get(self.config["tesla_switch"]).state if self.hass.states.get(self.config["tesla_switch"]) else None
-                self.tesla_actuator_w = self._raw_power_state(self.config["tesla_number"])
+                summary = self._decision_summary(proposed, leaf, tesla)
                 self.mode = proposed if self.enabled else "Disabled"
                 if not self.enabled:
-                    self.tesla_effective_target_w = None
-                    self.tesla_limit_reason = "Disabled"
-                    self.status = f"Shadow: {proposed}; no inverter writes"
+                    # Same proposed decision as live mode, but no service calls.
+                    self.status = f"Shadow | {summary}"
                     self._current_mode = None
                     self._safe_stop_attempted = False
                     return
 
                 if proposed == "Hold":
-                    self.tesla_effective_target_w = 0
-                    self.tesla_limit_reason = "HAEO requests Hold"
-                    self.leaf_limit_reason = "HAEO requests Hold"
-                    # Send the hold only on transition, not every 20 seconds.
                     if self._current_mode != "Hold":
                         self._safe_stop_attempted = False
                     await self._safe_stop("HAEO planned battery hold")
@@ -301,38 +310,27 @@ class DispatchCoordinator:
                     self.leaf_command_w = 0
                     self.tesla_command_w = 0
                 elif proposed == "Self-use":
-                    self.leaf_limit_reason = "None (native self-use)"
-                    # Solis balances rapid load changes in hardware.
-                    # Fronius follows its optimized HAEO Tesla baseload.
                     await self._dispatch("leaf", 0, forced=False)
                     await self._dispatch(
                         "tesla", tesla, force_write=self._current_mode != proposed
                     )
                     self._current_mode = proposed
                     self._safe_stop_attempted = False
-                    self.status = (
-                        f"Self-use: Solis hardware loop; Fronius tracks HAEO "
-                        f"Tesla target {tesla:.0f} W; no feedback corrections"
-                        + self._clamp_summary()
-                    )
                 else:
-                    # Economic allocation belongs entirely to HAEO.
                     await self._dispatch("leaf", leaf)
                     await self._dispatch(
                         "tesla", tesla, force_write=self._current_mode != proposed
                     )
                     self._current_mode = proposed
                     self._safe_stop_attempted = False
-                    self.status = (
-                        f"Arbitrage: following HAEO Leaf {leaf:.0f} W / "
-                        f"Tesla {tesla:.0f} W; no feedback corrections"
-                        + self._clamp_summary()
-                    )
+
+                # Report the same decision in either mode; extra details only
+                # when they explain an actual actuator write/skip.
+                self.status = summary
             except Exception as exc:
                 _LOGGER.warning("HAEO dispatch tick failed: %s", exc)
                 self.mode = "Error"
-                self.status = str(exc)
-                self.tesla_write_status = f"Dispatch error: {exc}"
+                self.status = f"Error | {exc}"
                 if self.enabled:
                     await self._safe_stop("Dispatch invalid")
             finally:
