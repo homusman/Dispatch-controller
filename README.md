@@ -1,6 +1,6 @@
 # HAEO Dispatch Controller
 
-**v0.2.3 — HAEO owns the economic decisions.** This custom HACS integration translates HAEO battery power targets into Solis and Fronius commands. It does **not** implement proportional grid feedback, battery reallocation, or a second optimization loop.
+**v0.2.4 — HAEO owns the economic decisions.** This custom HACS integration translates HAEO battery power targets into Solis and Fronius commands. It does **not** implement proportional grid feedback, battery reallocation, or a second optimization loop.
 
 ## How it works
 
@@ -35,18 +35,28 @@ Home Assistant → Settings → Devices & services → HAEO Dispatch Controller 
 
 ## Controls and diagnostics
 
-- **Dispatch enabled** switch: **OFF on startup**; no inverter commands until explicitly enabled.
-- **Dispatch mode** sensor: Disabled, Hold, Self-use, Arbitrage or Error.
-- **Dispatch status** sensor: recent controller decision/error.
-- **HAEO grid target / Leaf power / Tesla power** sensors: plan inputs in W.
-- **Measured grid power / Grid tracking error**: **diagnostic only**. Grid error never modifies commands.
-- **Solis command / Fronius command**: last dispatch requested; Unknown in shadow mode until a command is issued.
+- **Dispatch enabled** switch: OFF at startup. When disabled, the controller uses **Shadow** status to show the exact decision it would make, without writing to the inverters.
+- **Dispatch mode**: Disabled, Hold, Self-use, Arbitrage, or Error.
+- **Dispatch status**: A concise human-readable summary including operating mode and intended power commands, any actuator clamps, or faults.
+- **HAEO grid / Leaf / Tesla power**, measured grid power, and **Solis / Fronius command** sensors remain available for numeric comparisons.
+- The six extra Fronius troubleshooting sensors from v0.2.1–v0.2.3 are no longer created. HA's entity registry may retain old unavailable entries; remove those through the entity registry if desired.
 
-**v0.2.3 actuator limits and SoC:** The dispatcher no longer applies *any* battery SoC cutoffs, even at 0% or 99.9%, and does not require SoC telemetry for dispatch. Fronius/BMS and Solis/BMS retain final authority over what charge/discharge is physically allowed, including calibration cycles. It still clamps commands to the configured Home Assistant Number actuator minimum/maximum, and now appends **CLAMPED** details to Dispatch status whenever that happens. The **Fronius limited target** and **Fronius limiting reason** diagnostics show the Tesla clamp. An actuator clamp to 0 W is reported, not automatically treated as a fatal error. Mapped SoC entity selections are retained for backward compatibility but ignored by the dispatcher.
+### Status examples
 
-**v0.2.1 Fronius fix:** On transition into Self-use or Arbitrage (including the first enable), the controller explicitly sends Tesla's HAEO setpoint even if the Home Assistant Number entity already reports it. This addresses cases where the displayed actuator value did not guarantee that a command was transmitted following a mode change. The new **Fronius write status** and **Fronius last write time** diagnostic sensors show the last service-call decision. An accepted Home Assistant service call does not prove the inverter acted: compare the measured battery power. Normal steady-state reconciliation still skips unchanged values to avoid unnecessary writes.
+```text
+Shadow | Self-use | Solis auto | Tesla +2200 W
+Self-use | Solis auto | Tesla +2200 W
+Arbitrage | Leaf +1800 W | Tesla -1000 W
+Shadow | Arbitrage | Leaf +5000 W | Tesla +3000 W | CLAMP Leaf +6500→+5000 W
+Hold | Leaf 0 W | Tesla 0 W
+Error | tesla actuator unavailable: number.xxx | 0 W hold requested
+```
 
-A 20-second check is retained to catch mode changes and recover from missed state events; it does not calculate a grid-error power correction. The older gain, max-feedback-adjustment, max-command-step, and battery-priority entities are removed in v0.2.0. Home Assistant may retain their entity-registry entries marked unavailable; they can be deleted manually after updating.
+Shadow mode performs the same actuator min/max evaluation as live mode, but makes **no inverter service calls**. The clamp summaries show the actual requested setpoint when actuator limits apply. No SoC-based clipping is performed by the dispatcher; inverter/BMS protections remain authoritative.
+
+## Mode transitions
+
+On entry to Self-use or Arbitrage, the controller reasserts the Fronius/Tesla requested power target even if the Home Assistant Number already displays that setpoint. It avoids repeated writes when the displayed setpoint is unchanged. A successful HA service call doesn't prove that the inverter physically applied the request; verify actual battery power during commissioning.
 
 ## Safety and commissioning
 
