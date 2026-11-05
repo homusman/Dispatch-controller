@@ -19,15 +19,16 @@ FIELDS = [
     ("leaf_switch", "Solis Self-Use Mode", "switch"),
     ("tesla_switch", "Fronius Self-Use Mode", "switch"),
 ]
-def schema():
+def schema(values=None):
+    values = values or {}
     fields = {
-        vol.Required("name", default="HAEO Dispatch"): str,
-        vol.Required("grid_positive_import", default=True): bool,
-        vol.Required("leaf_positive_discharge", default=True): bool,
-        vol.Required("tesla_positive_discharge", default=True): bool,
+        vol.Required("name", default=values.get("name", "HAEO Dispatch")): str,
+        vol.Required("grid_positive_import", default=values.get("grid_positive_import", True)): bool,
+        vol.Required("leaf_positive_discharge", default=values.get("leaf_positive_discharge", True)): bool,
+        vol.Required("tesla_positive_discharge", default=values.get("tesla_positive_discharge", True)): bool,
     }
     for key, _label, domain in FIELDS:
-        fields[vol.Required(key)] = selector.EntitySelector(
+        fields[vol.Required(key, default=values[key] if key in values else vol.UNDEFINED)] = selector.EntitySelector(
             selector.EntitySelectorConfig(domain=domain)
         )
     return vol.Schema(fields)
@@ -43,3 +44,19 @@ class HAEOConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 title=user_input["name"], data=user_input
             )
         return self.async_show_form(step_id="user", data_schema=schema())
+
+    @staticmethod
+    def async_get_options_flow(config_entry):
+        return HAEOOptionsFlow()
+
+
+class HAEOOptionsFlow(config_entries.OptionsFlow):
+    """Allow editing sensors, signs and actuators without removing hub."""
+
+    async def async_step_init(self, user_input=None):
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+        current = {**self.config_entry.data, **self.config_entry.options}
+        return self.async_show_form(
+            step_id="init", data_schema=schema(current),
+        )
