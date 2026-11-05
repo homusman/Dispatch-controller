@@ -6,7 +6,7 @@ from homeassistant.const import Platform
 from .const import DOMAIN
 from .coordinator import DispatchCoordinator
 
-PLATFORMS = [Platform.SWITCH, Platform.NUMBER, Platform.SELECT, Platform.SENSOR]
+PLATFORMS = [Platform.SWITCH, Platform.SENSOR]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = DispatchCoordinator(hass, entry)
