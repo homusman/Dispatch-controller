@@ -1,0 +1,29 @@
+{
+  "title": "HAEO Dispatch Controller",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configure HAEO dispatch inputs and actuators",
+        "description": "Select HAEO plan sensors and the corresponding real inverter actuators. Dispatch starts disabled.",
+        "data": {
+          "name": "Controller name",
+          "grid_positive_import": "Measured grid sensor: positive means import",
+          "leaf_positive_discharge": "Measured Leaf battery sensor: positive means discharge",
+          "tesla_positive_discharge": "Measured Tesla battery sensor: positive means discharge",
+          "grid_plan": "HAEO grid active power (kW, positive import)",
+          "leaf_plan": "HAEO Leaf active power (kW, positive discharge)",
+          "tesla_plan": "HAEO Tesla active power (kW, positive discharge)",
+          "grid_actual": "Measured grid power (W or kW)",
+          "leaf_actual": "Measured Solis/Leaf battery power (W or kW)",
+          "tesla_actual": "Measured Fronius/Tesla battery power (W or kW)",
+          "leaf_soc": "Measured Leaf state of charge (%)",
+          "tesla_soc": "Measured Tesla state of charge (%)",
+          "leaf_number": "Solis forced battery power number",
+          "tesla_number": "Fronius forced battery power number",
+          "leaf_switch": "Solis Self-Use Mode switch",
+          "tesla_switch": "Fronius Self-Use Mode switch"
+        }
+      }
+    }
+  }
+}
