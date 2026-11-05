@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import logging
+import math
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_interval
 from datetime import timedelta
@@ -43,6 +44,7 @@ class DispatchCoordinator:
         self.tesla_write_time = None
         self.tesla_effective_target_w = None
         self.tesla_limit_reason = "Not evaluated"
+        self.leaf_limit_reason = "Not evaluated"
         self.tesla_actuator_w = None
         self.tesla_switch_state = None
         self._tesla_self_use_conflicts = 0
@@ -126,8 +128,8 @@ class DispatchCoordinator:
         actual_tesla = self._watts("tesla_actual")
         if not self.config["tesla_positive_discharge"]:
             actual_tesla *= -1
-        self._raw("leaf_soc")
-        self._raw("tesla_soc")
+        # Battery SoC is deliberately not an interlock or required input here.
+        # Inverter / BMS enforces battery constraints and calibration behavior.
         self.grid_target_w, self.grid_actual_w = grid, actual_grid
         self.grid_error_w = actual_grid - grid  # Positive -> need more discharge.
         self.leaf_plan_w, self.tesla_plan_w = leaf, tesla
@@ -141,6 +143,7 @@ class DispatchCoordinator:
         return "Arbitrage"
 
     def _limits(self, which, target):
+        """Enforce exposed actuator bounds only; never impose SoC cutoffs."""
         entity_id = self.config[which + "_number"]
         state = self.hass.states.get(entity_id)
         if not state or state.state in ("unavailable", "unknown"):
@@ -149,29 +152,32 @@ class DispatchCoordinator:
         if low is None or high is None:
             raise ValueError(f"{which} actuator limits unavailable: {entity_id}")
         low, high = float(low), float(high)
+        if not (math.isfinite(low) and math.isfinite(high) and low <= high):
+            raise ValueError(f"{which} invalid actuator range [{low}, {high}]")
         requested = float(target)
-        target = clamp(requested, low, high)
-        reasons = []
-        if target != requested:
-            reasons.append(f"Actuator range [{low:g}, {high:g}] W clipped {requested:.0f} W")
-        _, soc = self._raw(which + "_soc")
-        if soc <= 10 and target > 0:
-            reasons.append(f"SoC {soc:g}% <= 10% discharge cutoff")
-            target = 0
-        if soc >= 95 and target < 0:
-            reasons.append(f"SoC {soc:g}% >= 95% charge cutoff")
-            target = 0
-        target = int(round(target / 10) * 10)
+        clipped = clamp(requested, low, high)
+        # Round to 10 W only when this doesn't violate device constraints.
+        rounded = round(clipped / 10) * 10
+        target = int(rounded) if low <= rounded <= high else clipped
+        reason = (
+            f"Actuator range [{low:g}, {high:g}] W clipped "
+            f"{requested:.0f} W to {target:.0f} W"
+            if clipped != requested else "None"
+        )
         if which == "tesla":
             self.tesla_effective_target_w = target
-            self.tesla_limit_reason = "; ".join(reasons) if reasons else "None"
-            if abs(requested) >= BATTERY_TOLERANCE_W and target == 0:
-                raise ValueError(
-                    f"Tesla HAEO requests {requested:.0f} W but actuator target "
-                    f"becomes 0 W: {self.tesla_limit_reason}. "
-                    f"Check Fronius Number mapping, min/max and SoC."
-                )
+            self.tesla_limit_reason = reason
+        else:
+            self.leaf_limit_reason = reason
         return target
+
+    def _clamp_summary(self):
+        notes = []
+        if self.leaf_limit_reason not in ("None", "Not evaluated"):
+            notes.append(f"Leaf: {self.leaf_limit_reason}")
+        if self.tesla_limit_reason not in ("None", "Not evaluated"):
+            notes.append(f"Tesla: {self.tesla_limit_reason}")
+        return f"; CLAMPED: {'; '.join(notes)}" if notes else ""
 
     async def _call(self, domain, service, entity_id, **data):
         await self.hass.services.async_call(
@@ -286,6 +292,7 @@ class DispatchCoordinator:
                 if proposed == "Hold":
                     self.tesla_effective_target_w = 0
                     self.tesla_limit_reason = "HAEO requests Hold"
+                    self.leaf_limit_reason = "HAEO requests Hold"
                     # Send the hold only on transition, not every 20 seconds.
                     if self._current_mode != "Hold":
                         self._safe_stop_attempted = False
@@ -294,6 +301,7 @@ class DispatchCoordinator:
                     self.leaf_command_w = 0
                     self.tesla_command_w = 0
                 elif proposed == "Self-use":
+                    self.leaf_limit_reason = "None (native self-use)"
                     # Solis balances rapid load changes in hardware.
                     # Fronius follows its optimized HAEO Tesla baseload.
                     await self._dispatch("leaf", 0, forced=False)
@@ -305,6 +313,7 @@ class DispatchCoordinator:
                     self.status = (
                         f"Self-use: Solis hardware loop; Fronius tracks HAEO "
                         f"Tesla target {tesla:.0f} W; no feedback corrections"
+                        + self._clamp_summary()
                     )
                 else:
                     # Economic allocation belongs entirely to HAEO.
@@ -317,6 +326,7 @@ class DispatchCoordinator:
                     self.status = (
                         f"Arbitrage: following HAEO Leaf {leaf:.0f} W / "
                         f"Tesla {tesla:.0f} W; no feedback corrections"
+                        + self._clamp_summary()
                     )
             except Exception as exc:
                 _LOGGER.warning("HAEO dispatch tick failed: %s", exc)
