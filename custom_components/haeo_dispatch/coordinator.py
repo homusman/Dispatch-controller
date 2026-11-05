@@ -39,6 +39,8 @@ class DispatchCoordinator:
         self._running = asyncio.Lock()
         self._listeners = []
         self._safe_stop_attempted = False
+        self.tesla_write_status = "No command sent"
+        self.tesla_write_time = None
 
     @property
     def device_info(self):
@@ -155,7 +157,7 @@ class DispatchCoordinator:
             domain, service, {"entity_id": entity_id, **data}, blocking=True
         )
 
-    async def _dispatch(self, which, target, forced=True):
+    async def _dispatch(self, which, target, forced=True, force_write=False):
         """Write only actual HAEO setpoints, never a grid-error correction."""
         number = self.config[which + "_number"]
         switch = self.config[which + "_switch"]
@@ -173,13 +175,25 @@ class DispatchCoordinator:
 
         target = self._limits(which, target)
         if state.state == "on":
+            force_write = True  # Re-assert the requested target after mode change.
             # Stage zero before leaving self-use. This prevents replaying
             # a previously stored power command during the mode transition.
             await self._call("number", "set_value", number, value=0)
             await self._call("switch", "turn_off", switch)
         current = self._raw_power_state(number)
-        if abs(target - current) >= 10:
+        should_write = force_write or abs(target - current) >= 10
+        if should_write:
             await self._call("number", "set_value", number, value=target)
+            if which == "tesla":
+                self.tesla_write_status = (
+                    f"Sent {target} W to {number}"
+                    + (" (mode transition / enable)" if force_write else "")
+                )
+                self.tesla_write_time = datetime.now(timezone.utc).isoformat()
+        elif which == "tesla":
+            self.tesla_write_status = (
+                f"No service call; {number} already reports {current:.0f} W"
+            )
         if which == "leaf":
             self.leaf_command_w = target
         else:
@@ -237,7 +251,9 @@ class DispatchCoordinator:
                     # Solis balances rapid load changes in hardware.
                     # Fronius follows its optimized HAEO Tesla baseload.
                     await self._dispatch("leaf", 0, forced=False)
-                    await self._dispatch("tesla", tesla)
+                    await self._dispatch(
+                        "tesla", tesla, force_write=self._current_mode != proposed
+                    )
                     self._current_mode = proposed
                     self.status = (
                         f"Self-use: Solis hardware loop; Fronius tracks HAEO "
@@ -247,7 +263,9 @@ class DispatchCoordinator:
                     self._safe_stop_attempted = False
                     # Economic allocation belongs entirely to HAEO.
                     await self._dispatch("leaf", leaf)
-                    await self._dispatch("tesla", tesla)
+                    await self._dispatch(
+                        "tesla", tesla, force_write=self._current_mode != proposed
+                    )
                     self._current_mode = proposed
                     self.status = (
                         f"Arbitrage: following HAEO Leaf {leaf:.0f} W / "
@@ -257,6 +275,7 @@ class DispatchCoordinator:
                 _LOGGER.warning("HAEO dispatch tick failed: %s", exc)
                 self.mode = "Error"
                 self.status = str(exc)
+                self.tesla_write_status = f"Dispatch error: {exc}"
                 if self.enabled:
                     await self._safe_stop("Dispatch invalid")
             finally:
