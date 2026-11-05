@@ -174,6 +174,9 @@ class DispatchCoordinator:
     def _decision_summary(self, mode, leaf, tesla):
         """Concise plan/status shared by shadow and actual dispatch."""
         if mode == "Hold":
+            self.leaf_limit_reason = "None"
+            self.tesla_limit_reason = "None"
+            self.tesla_effective_target_w = 0
             return "Hold | Leaf 0 W | Tesla 0 W"
         if mode == "Self-use":
             parts = ["Self-use", "Solis auto"]
@@ -333,5 +336,7 @@ class DispatchCoordinator:
                 self.status = f"Error | {exc}"
                 if self.enabled:
                     await self._safe_stop("Dispatch invalid")
+                    # Preserve the reason for the fault after _safe_stop.
+                    self.status = f"Error | {exc} | 0 W hold requested"
             finally:
                 self.update()
