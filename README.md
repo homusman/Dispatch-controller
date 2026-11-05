@@ -1,6 +1,6 @@
 # HAEO Dispatch Controller
 
-**v0.2.2 — HAEO owns the economic decisions.** This custom HACS integration translates HAEO battery power targets into Solis and Fronius commands. It does **not** implement proportional grid feedback, battery reallocation, or a second optimization loop.
+**v0.2.3 — HAEO owns the economic decisions.** This custom HACS integration translates HAEO battery power targets into Solis and Fronius commands. It does **not** implement proportional grid feedback, battery reallocation, or a second optimization loop.
 
 ## How it works
 
@@ -24,7 +24,7 @@ Configure these 12 entity mappings:
 
 - HAEO planned grid active power, Leaf active power, Tesla active power (**kW**).
 - Measured grid power, Leaf battery power, Tesla battery power (**W** or **kW**); set measured-sign selectors accurately.
-- Actual Leaf and Tesla SoC (**%**).
+- Actual Leaf and Tesla SoC (**%**, legacy mappings retained but not used for command limiting).
 - Solis and Fronius signed-power Number actuator entities and Self-Use Mode Switch actuator entities.
 
 Example HAEO sensor IDs (assuming the elements are named Grid, Leaf and Tesla): `sensor.grid_active_power`, `sensor.leaf_active_power`, `sensor.tesla_active_power`. Choose actual IDs rather than guessing.
@@ -42,7 +42,7 @@ Home Assistant → Settings → Devices & services → HAEO Dispatch Controller 
 - **Measured grid power / Grid tracking error**: **diagnostic only**. Grid error never modifies commands.
 - **Solis command / Fronius command**: last dispatch requested; Unknown in shadow mode until a command is issued.
 
-**v0.2.2 diagnosis:** The Fronius limited target and limiting reason show the actual value after the actuator min/max and SoC interlocks. When a nonzero HAEO Tesla plan clips to zero, the controller now reports a descriptive **Error** rather than silently treating zero as the planned command. Fail-safe 0W hold is attempted once, not repeated every 20 seconds. This intentionally disables the invalid target until the mapping, limits, or SoC readings are corrected. Use the Fronius actuator value and Self-Use switch-state sensors to distinguish the issued command from the inverter response.
+**v0.2.3 actuator limits and SoC:** The dispatcher no longer applies *any* battery SoC cutoffs, even at 0% or 99.9%, and does not require SoC telemetry for dispatch. Fronius/BMS and Solis/BMS retain final authority over what charge/discharge is physically allowed, including calibration cycles. It still clamps commands to the configured Home Assistant Number actuator minimum/maximum, and now appends **CLAMPED** details to Dispatch status whenever that happens. The **Fronius limited target** and **Fronius limiting reason** diagnostics show the Tesla clamp. An actuator clamp to 0 W is reported, not automatically treated as a fatal error. Mapped SoC entity selections are retained for backward compatibility but ignored by the dispatcher.
 
 **v0.2.1 Fronius fix:** On transition into Self-use or Arbitrage (including the first enable), the controller explicitly sends Tesla's HAEO setpoint even if the Home Assistant Number entity already reports it. This addresses cases where the displayed actuator value did not guarantee that a command was transmitted following a mode change. The new **Fronius write status** and **Fronius last write time** diagnostic sensors show the last service-call decision. An accepted Home Assistant service call does not prove the inverter acted: compare the measured battery power. Normal steady-state reconciliation still skips unchanged values to avoid unnecessary writes.
 
@@ -55,7 +55,7 @@ This is experimental software, not an export limiter or a BMS safety controller.
 - Initial state is **shadow mode** (Dispatch enabled OFF). Inspect the planned mode, power targets, units, and sensor sign conventions.
 - Disable the old Battery Aggregator and any other automations writing to the same inverter entities.
 - Confirm small power requests and all three mode transitions under observation. **Setpoint changes are no longer rate-limited by this dispatcher**; inverter/BMS hardware must enforce safe electrical limits.
-- Dispatch values are clamped to actuator limits, with basic fixed SoC cutoffs (no discharge below 10%, no charge above 95%). These are not HAEO dynamic reserves.
+- Dispatch values are clamped only to the Number actuator's exposed min/max. **No SoC interlocks are enforced here**: battery/inverter firmware must prevent unsafe charging or discharging and may allow 0%/99.9% recalibration. Configure battery operating reserves in HAEO or physical battery controls as appropriate.
 - If an input becomes unavailable or a HAEO plan has not reported for over 15 minutes, the controller requests zero-power hold while enabled. Check actual inverter state: network/service errors may prevent these requests.
 - Explicitly switching dispatch OFF requests zero-power hold on both batteries. Starting/restarting Home Assistant leaves dispatch OFF **without** transmitting a new inverter command.
 - Measured battery/grid power inputs remain available for diagnostics and sanity checks, but the dispatcher does not use their power errors to tune commands.
