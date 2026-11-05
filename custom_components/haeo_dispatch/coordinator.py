@@ -165,6 +165,12 @@ class DispatchCoordinator:
         if which == "tesla":
             self.tesla_effective_target_w = target
             self.tesla_limit_reason = "; ".join(reasons) if reasons else "None"
+            if abs(requested) >= BATTERY_TOLERANCE_W and target == 0:
+                raise ValueError(
+                    f"Tesla HAEO requests {requested:.0f} W but actuator target "
+                    f"becomes 0 W: {self.tesla_limit_reason}. "
+                    f"Check Fronius Number mapping, min/max and SoC."
+                )
         return target
 
     async def _call(self, domain, service, entity_id, **data):
@@ -288,7 +294,6 @@ class DispatchCoordinator:
                     self.leaf_command_w = 0
                     self.tesla_command_w = 0
                 elif proposed == "Self-use":
-                    self._safe_stop_attempted = False
                     # Solis balances rapid load changes in hardware.
                     # Fronius follows its optimized HAEO Tesla baseload.
                     await self._dispatch("leaf", 0, forced=False)
@@ -296,18 +301,19 @@ class DispatchCoordinator:
                         "tesla", tesla, force_write=self._current_mode != proposed
                     )
                     self._current_mode = proposed
+                    self._safe_stop_attempted = False
                     self.status = (
                         f"Self-use: Solis hardware loop; Fronius tracks HAEO "
                         f"Tesla target {tesla:.0f} W; no feedback corrections"
                     )
                 else:
-                    self._safe_stop_attempted = False
                     # Economic allocation belongs entirely to HAEO.
                     await self._dispatch("leaf", leaf)
                     await self._dispatch(
                         "tesla", tesla, force_write=self._current_mode != proposed
                     )
                     self._current_mode = proposed
+                    self._safe_stop_attempted = False
                     self.status = (
                         f"Arbitrage: following HAEO Leaf {leaf:.0f} W / "
                         f"Tesla {tesla:.0f} W; no feedback corrections"
