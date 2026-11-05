@@ -249,8 +249,9 @@ class DispatchCoordinator:
                     return
 
                 if proposed == "Hold":
-                    # Hold must be immediate when coming from self-use/arbitrage.
-                    self._safe_stop_attempted = False
+                    # Send the hold only on transition, not every 20 seconds.
+                    if self._current_mode != "Hold":
+                        self._safe_stop_attempted = False
                     await self._safe_stop("HAEO planned battery hold")
                     self._current_mode = "Hold"
                     self.leaf_command_w = 0
