@@ -41,6 +41,11 @@ class DispatchCoordinator:
         self._safe_stop_attempted = False
         self.tesla_write_status = "No command sent"
         self.tesla_write_time = None
+        self.tesla_effective_target_w = None
+        self.tesla_limit_reason = "Not evaluated"
+        self.tesla_actuator_w = None
+        self.tesla_switch_state = None
+        self._tesla_self_use_conflicts = 0
 
     @property
     def device_info(self):
@@ -139,18 +144,28 @@ class DispatchCoordinator:
         entity_id = self.config[which + "_number"]
         state = self.hass.states.get(entity_id)
         if not state or state.state in ("unavailable", "unknown"):
-            raise ValueError(f"{which} actuator unavailable")
+            raise ValueError(f"{which} actuator unavailable: {entity_id}")
         low, high = state.attributes.get("min"), state.attributes.get("max")
         if low is None or high is None:
-            raise ValueError(f"{which} actuator limits unavailable")
-        target = clamp(target, float(low), float(high))
+            raise ValueError(f"{which} actuator limits unavailable: {entity_id}")
+        low, high = float(low), float(high)
+        requested = float(target)
+        target = clamp(requested, low, high)
+        reasons = []
+        if target != requested:
+            reasons.append(f"Actuator range [{low:g}, {high:g}] W clipped {requested:.0f} W")
         _, soc = self._raw(which + "_soc")
-        # Conservative interlock; actual BMS protections remain authoritative.
         if soc <= 10 and target > 0:
+            reasons.append(f"SoC {soc:g}% <= 10% discharge cutoff")
             target = 0
         if soc >= 95 and target < 0:
+            reasons.append(f"SoC {soc:g}% >= 95% charge cutoff")
             target = 0
-        return int(round(target / 10) * 10)
+        target = int(round(target / 10) * 10)
+        if which == "tesla":
+            self.tesla_effective_target_w = target
+            self.tesla_limit_reason = "; ".join(reasons) if reasons else "None"
+        return target
 
     async def _call(self, domain, service, entity_id, **data):
         await self.hass.services.async_call(
@@ -174,13 +189,31 @@ class DispatchCoordinator:
             return
 
         target = self._limits(which, target)
+        if which == "tesla":
+            self.tesla_switch_state = state.state
         if state.state == "on":
-            force_write = True  # Re-assert the requested target after mode change.
-            # Stage zero before leaving self-use. This prevents replaying
-            # a previously stored power command during the mode transition.
-            await self._call("number", "set_value", number, value=0)
+            # Re-assert the target once after the mode transition. Repeated
+            # re-enabling by another controller is an unsafe command conflict.
+            if which == "tesla":
+                self._tesla_self_use_conflicts += 1
+                if self._tesla_self_use_conflicts > 2:
+                    raise ValueError(
+                        f"Tesla Self-Use switch {switch} keeps reverting ON; "
+                        "check actuator mapping / other automations"
+                    )
+            force_write = True
+            # Only stage 0 if the number does not already report zero.
+            # Switching the mode OFF must precede the requested forced target.
+            if abs(self._raw_power_state(number)) >= 10:
+                await self._call("number", "set_value", number, value=0)
             await self._call("switch", "turn_off", switch)
+            if self.hass.states.is_state(switch, "on"):
+                raise ValueError(f"{which} Self-Use switch remained ON after turn_off")
+        elif which == "tesla":
+            self._tesla_self_use_conflicts = 0
         current = self._raw_power_state(number)
+        if which == "tesla":
+            self.tesla_actuator_w = current
         should_write = force_write or abs(target - current) >= 10
         if should_write:
             await self._call("number", "set_value", number, value=target)
@@ -198,6 +231,8 @@ class DispatchCoordinator:
             self.leaf_command_w = target
         else:
             self.tesla_command_w = target
+            self.tesla_actuator_w = self._raw_power_state(number)
+            self.tesla_switch_state = self.hass.states.get(switch).state
 
     def _raw_power_state(self, entity_id):
         state = self.hass.states.get(entity_id)
@@ -231,14 +266,20 @@ class DispatchCoordinator:
             try:
                 grid, leaf, tesla, actual_leaf, _actual_tesla = self._read_inputs()
                 proposed = self._select_mode(grid, leaf, tesla)
+                self.tesla_switch_state = self.hass.states.get(self.config["tesla_switch"]).state if self.hass.states.get(self.config["tesla_switch"]) else None
+                self.tesla_actuator_w = self._raw_power_state(self.config["tesla_number"])
                 self.mode = proposed if self.enabled else "Disabled"
                 if not self.enabled:
+                    self.tesla_effective_target_w = None
+                    self.tesla_limit_reason = "Disabled"
                     self.status = f"Shadow: {proposed}; no inverter writes"
                     self._current_mode = None
                     self._safe_stop_attempted = False
                     return
 
                 if proposed == "Hold":
+                    self.tesla_effective_target_w = 0
+                    self.tesla_limit_reason = "HAEO requests Hold"
                     # Send the hold only on transition, not every 20 seconds.
                     if self._current_mode != "Hold":
                         self._safe_stop_attempted = False
