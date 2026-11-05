@@ -23,7 +23,7 @@ class DispatchCoordinator:
     def __init__(self, hass: HomeAssistant, entry):
         self.hass = hass
         self.entry = entry
-        self.config = entry.data
+        self.config = {**entry.data, **entry.options}
         self.enabled = False  # An explicit action is required before any writes.
         self.mode = "Disabled"
         self.status = "Observation only; dispatch disabled"
