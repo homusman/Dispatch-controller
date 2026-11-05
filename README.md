@@ -1,78 +1,63 @@
 # HAEO Dispatch Controller
 
-A HACS-compatible Home Assistant integration that executes **HAEO** per-battery plans through the signed-power Solis and Fronius actuators. This integration is **experimental**; validate in shadow mode first.
+**v0.2.0 — HAEO owns the economic decisions.** This custom HACS integration translates HAEO battery power targets into Solis and Fronius commands. It does **not** implement proportional grid feedback, battery reallocation, or a second optimization loop.
 
-## Architecture
+## How it works
 
-HAEO optimizes Leaf and Tesla separately; this integration never chooses the economic battery allocation.
+HAEO publishes its current optimized active-power targets for the grid, Leaf battery and Tesla battery. The dispatcher checks them every **20 seconds**, translates signs and units, and issues commands when the requested inverter setpoints change. This is a command reconciliation interval, **not** an independent control loop.
 
-- **HOLD**: if *both* planned battery powers are approximately zero, request 0 W forced hold on Solis and Fronius (even when HAEO's planned grid power is zero).
-- **SELF_USE**: otherwise, if planned grid active power is near zero, enable Solis hardware self-use; command Fronius to follow the HAEO Tesla target, adjusting it by a **bounded** correction toward HAEO's Leaf target based on measured Solis battery power.
-- **ARBITRAGE**: otherwise, send HAEO's individual battery plans as feedforward targets and apply a slow, bounded correction toward HAEO's planned **grid active power**, prioritized across batteries using selectable policy (Leaf first / Tesla first / SoC headroom).
+| Mode | Conditions | Solis / Leaf | Fronius / Tesla |
+| --- | --- | --- | --- |
+| **Hold** | Both HAEO battery targets near 0 W | Forced 0 W | Forced 0 W |
+| **Self-use** | Otherwise HAEO grid net target near 0 W | Native Solis hardware self-use | HAEO's **Tesla** signed power target |
+| **Arbitrage** | Otherwise (nonzero HAEO grid target) | HAEO's **Leaf** signed target | HAEO's **Tesla** signed target |
 
-### Sign conventions
+Hold has priority when both individual battery targets are near zero. HAEO grid active power is **positive import / negative export**; HAEO battery active power is **positive discharge / negative charge**, in kW. Inverter actuator numbers use the same battery power sign, in W.
 
-- HAEO grid active power: positive **import**, negative **export**; unit kW.
-- Measured grid meter: configurable polarity; internally positive import.
-- HAEO battery: nonnegative charge/discharge sensors, kW; signed dispatch = discharge − charge.
-- Both actuators: positive **discharge**, negative **charge**; unit W.
-- Measured battery power sign is configurable per battery.
+**Note:** In self-use mode, Solis operates autonomously and therefore may deviate from the optimized Leaf SoC trajectory. This is an explicitly chosen tradeoff; the dispatcher **does not** independently compensate for grid error. More accurate real-time load inputs and frequent HAEO reoptimization should reduce deviations. Fronius still follows the HAEO Tesla power target.
 
-## Install
+## Installation
 
-HACS → Custom repositories → `https://github.com/homusman/Dispatch-controller` (Integration) → Download → restart HA → Add integration → **HAEO Dispatch Controller**.
+In HACS, add `https://github.com/homusman/Dispatch-controller` as a custom Integration repository, download, restart Home Assistant, and add **HAEO Dispatch Controller** from Settings → Devices & services.
 
-Configure the HAEO current grid **active power** sensor, four HAEO battery charge/discharge sensors, measured grid power, measured battery power sensors, both actuator Number entities and both self-use Switch entities, and two SoC sensors. Entity IDs are selected during setup rather than hardcoded.
+Configure these 12 entity mappings:
 
-The controller starts with **Dispatch Enabled OFF** and only observes the plan. Check the Mode, Targets, Grid Error and Status sensors before enabling any commands. The previous Battery Aggregator or other dispatch automation must be disabled to avoid competing writes.
+- HAEO planned grid active power, Leaf active power, Tesla active power (**kW**).
+- Measured grid power, Leaf battery power, Tesla battery power (**W** or **kW**); set measured-sign selectors accurately.
+- Actual Leaf and Tesla SoC (**%**).
+- Solis and Fronius signed-power Number actuator entities and Self-Use Mode Switch actuator entities.
 
-## Controls
+Example HAEO sensor IDs (assuming the elements are named Grid, Leaf and Tesla): `sensor.grid_active_power`, `sensor.leaf_active_power`, `sensor.tesla_active_power`. Choose actual IDs rather than guessing.
 
-- `switch.*_dispatch_enabled`: **OFF by default**; enabling controls the inverters.
-- `number.*_max_feedback_adjustment`: maximum total instantaneous feedback correction (W); default 500 W.
-- `number.*_feedback_gain`: grid error proportional gain; default 0.3.
-- `select.*_battery_priority`: Leaf first, Tesla first or SoC headroom.
-- `number.*_max_command_step`: maximum step in commanded battery target per tick (W); default 500 W.
-- `sensor.*_mode`, `sensor.*_leaf_target`, `sensor.*_tesla_target`, `sensor.*_grid_error`, `sensor.*_status` for diagnostics.
+## Controls and diagnostics
 
-The loop runs every 20 seconds; a stale HAEO input (>15 minutes without a state report) or invalid values triggers a zero-hold request, then suppresses automatic commands until valid again. An explicit OFF requests zero-power forced hold on both inverters; it does not automatically switch Solis back to self-use. The controller starts OFF after every HA restart and sends no commands until enabled. If an actuator is unavailable, check the inverter's physical state because a hold request may fail. Maximum observed grid import/export and SOC ceilings are **not** physical interlocks; configure hardware export limits separately.
+- **Dispatch enabled** switch: **OFF on startup**; no inverter commands until explicitly enabled.
+- **Dispatch mode** sensor: Disabled, Hold, Self-use, Arbitrage or Error.
+- **Dispatch status** sensor: recent controller decision/error.
+- **HAEO grid target / Leaf power / Tesla power** sensors: plan inputs in W.
+- **Measured grid power / Grid tracking error**: **diagnostic only**. Grid error never modifies commands.
+- **Solis command / Fronius command**: last dispatch requested; Unknown in shadow mode until a command is issued.
 
-## V0.1 limitations
+A 20-second check is retained to catch mode changes and recover from missed state events; it does not calculate a grid-error power correction. The older gain, max-feedback-adjustment, max-command-step, and battery-priority entities are removed in v0.2.0. Home Assistant may retain their entity-registry entries marked unavailable; they can be deleted manually after updating.
 
-- Physical measurements and inverter response times vary. Confirm polarity on your measured grid and battery sensors.
-- Self-use mode correction follows the *Leaf target* using measured Leaf battery power, rather than forcibly driving Solis to zero.
-- SoC-based prioritization uses available percentage headroom, not HAEO's future shadow prices.
-- HAEO emits average power over each optimization interval. The feedback loop is intentionally bounded so it does not replace HAEO's 5-minute economic replanning.
-- No complete battery energy-budget tracking or hard export-limit enforcement yet.
-- The integration is not a safety-certified device controller. Keep hardware/BMS safety limits and export protections in place.
+## Safety and commissioning
 
-## Next
+This is experimental software, not an export limiter or a BMS safety controller.
 
-Improve load forecasting; assess predicted vs actual loads, separate uncontrollable base load from EV/other controllable loads, and feed corrected load forecasts to HAEO.
+- Initial state is **shadow mode** (Dispatch enabled OFF). Inspect the planned mode, power targets, units, and sensor sign conventions.
+- Disable the old Battery Aggregator and any other automations writing to the same inverter entities.
+- Confirm small power requests and all three mode transitions under observation. **Setpoint changes are no longer rate-limited by this dispatcher**; inverter/BMS hardware must enforce safe electrical limits.
+- Dispatch values are clamped to actuator limits, with basic fixed SoC cutoffs (no discharge below 10%, no charge above 95%). These are not HAEO dynamic reserves.
+- If an input becomes unavailable or a HAEO plan has not reported for over 15 minutes, the controller requests zero-power hold while enabled. Check actual inverter state: network/service errors may prevent these requests.
+- Explicitly switching dispatch OFF requests zero-power hold on both batteries. Starting/restarting Home Assistant leaves dispatch OFF **without** transmitting a new inverter command.
+- Measured battery/grid power inputs remain available for diagnostics and sanity checks, but the dispatcher does not use their power errors to tune commands.
 
-## Entity selection example
+## Faster HAEO updates
 
-The HAEO sensor names in the current HAEO documentation are:
+HAEO is **event-driven**, not fixed to a five-minute interval: it optimizes when an input entity changes or the horizon crosses a time boundary, with debounce to combine nearby updates. Feed HAEO accurate, current load inputs and verify new optimization results are published often enough. A manual `haeo.optimize` service/action can request an immediate solve when needed.
 
-```text
-sensor.grid_active_power       # HAEO grid target, +kW means import
-sensor.leaf_active_power       # HAEO Leaf target, +kW means discharge
-sensor.tesla_active_power      # HAEO Tesla target, +kW means discharge
-```
+Reference: [HAEO data-update documentation](https://github.com/hass-energy/haeo/blob/main/docs/user-guide/data-updates.md).
 
-Names above are examples for elements literally called Grid, Leaf and Tesla. Select your actual HAEO entities in the config flow. Do not use actual measured grid sensors as HAEO plan inputs.
+## Next mini-project
 
-For physical measurements, choose actual grid meter power, Solis/Leaf battery power, Fronius/Tesla battery power, and actual Leaf and Tesla SoC sensors. Set the grid/battery polarity toggles to match **your measured sensors**, not the HAEO plan.
-
-## Shadow-mode commissioning
-
-1. Install, restart and configure the 12 entity selectors. Keep **Dispatch enabled OFF**.
-2. Check `Dispatch mode`, `HAEO grid target`, `HAEO Leaf power`, `HAEO Tesla power`, `Measured grid power` and `Grid tracking error` against HAEO's own chart. Confirm W/kW and polarity.
-3. Disconnect or disable any existing Battery Aggregator, manual scheduled discharge automation, or other controller targeting the same two actuators.
-4. With personnel watching inverter power, enable dispatch for a short low-power test; begin with feedback adjustment set to **0 W**. Test Hold, Self-use and small signed power commands. Validate both Solis/Leaf and Fronius/Tesla measurements.
-5. Only after validating mode changes and actuator direction, increase feedback gradually (e.g. 100–300 W), and then test a household load step. The default 500 W is not a commissioning requirement.
-6. If HAEO reports stale or invalid data while enabled, the integration attempts an immediate 0 W hold. Do not rely on this as a grid export safety interlock.
-
-**Known tradeoff:** With Solis in self-use, its physical response may deviate from HAEO's optimized Leaf energy schedule. Fronius only compensates a bounded share of this difference and the optimizer must replan using actual SoCs. For major unforecast EV demand, do not use unlimited grid-error correction.
-
-**Not currently provided:** realtime feedback of physical command acceptance, hard export-limit interlock, schedule-integrated correction energy budget, and dynamic SoC minimum reserves from HAEO. Treat this as experimental v0.1 software.
+Improve the HAEO load forecast: separate baseline household load from unpredictable loads such as the EV charger; give HAEO the live changes to trigger economically informed replanning. Keep grid-error feedback in this integration **disabled/removed** unless a concrete control gap is demonstrated.
