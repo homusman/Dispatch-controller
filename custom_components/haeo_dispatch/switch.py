@@ -19,8 +19,9 @@ class EnableDispatch(DispatchEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs):
         self.coordinator.enabled = False
-        self.coordinator.status = (
-            "Dispatch disabled. Last inverter mode remains until manually changed."
-        )
         self.coordinator.mode = "Disabled"
+        # Explicit disable means stop the last forced dispatch rather than
+        # silently leaving a persistent Fronius discharge command active.
+        self.coordinator._safe_stop_attempted = False
+        await self.coordinator._safe_stop("Dispatch disabled by user")
         self.coordinator.update()
