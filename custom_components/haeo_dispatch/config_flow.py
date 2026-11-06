@@ -26,6 +26,7 @@ def schema(values=None):
         vol.Required("grid_positive_import", default=values.get("grid_positive_import", True)): bool,
         vol.Required("leaf_positive_discharge", default=values.get("leaf_positive_discharge", True)): bool,
         vol.Required("tesla_positive_discharge", default=values.get("tesla_positive_discharge", True)): bool,
+        vol.Required("fallback_mode", default=values.get("fallback_mode", "hold")): vol.In(["hold", "self_use"]),
     }
     for key, _label, domain in FIELDS:
         fields[vol.Required(key, default=values[key] if key in values else vol.UNDEFINED)] = selector.EntitySelector(
