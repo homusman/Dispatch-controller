@@ -23,6 +23,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = entry.runtime_data
     await coordinator.stop()
     result = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if result:
-        entry.async_unload_callbacks()
+    # ConfigEntry owns callbacks registered through async_on_unload;
+    # Home Assistant clears them on unload. No manual cleanup API exists.
     return result
