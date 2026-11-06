@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime, timezone
 import logging
 import math
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval, async_track_state_change_event
 from datetime import timedelta
 
@@ -40,7 +40,6 @@ class DispatchCoordinator:
         self._unsub_switches = None
         self._running = asyncio.Lock()
         self._listeners = []
-        self._safe_stop_attempted = False
         self.tesla_write_status = "No command sent"
         self.tesla_write_time = None
         self.tesla_effective_target_w = None
@@ -90,6 +89,7 @@ class DispatchCoordinator:
             self._unsub_switches()
             self._unsub_switches = None
 
+    @callback
     def _on_switch_changed(self, _event):
         # The physical inverter mode can change outside the dispatcher.
         # Reconcile or update the shadow preview without waiting 20 seconds.
@@ -304,22 +304,45 @@ class DispatchCoordinator:
         return float(state.state)
 
     async def _safe_stop(self, reason):
-        self.status = reason + "; requesting 0W hold"
-        if self._safe_stop_attempted:
-            return
-        self._safe_stop_attempted = True
+        """Reconcile both batteries to forced 0 W on every stop tick.
+
+        Retry failed commands after an actuator recovers rather than treating
+        a previous service-call attempt as a completed safe stop.
+        """
+        pending = []
         for which in ("leaf", "tesla"):
+            num = self.config[which + "_number"]
+            sw = self.config[which + "_switch"]
+            number_state = self.hass.states.get(num)
+            switch_state = self.hass.states.get(sw)
             try:
-                # Bypass rate limiting for fail-safe stop.
-                num = self.config[which + "_number"]
-                sw = self.config[which + "_switch"]
-                if self.hass.states.is_state(sw, "on"):
+                # Unknown/unavailable state must never count as verified zero.
+                number_zero = (
+                    number_state is not None
+                    and number_state.state not in ("unavailable", "unknown")
+                    and math.isfinite(float(number_state.state))
+                    and abs(float(number_state.state)) < 10
+                )
+                switch_off = switch_state is not None and switch_state.state == "off"
+
+                if not number_zero:
                     await self._call("number", "set_value", num, value=0)
+                if not switch_off:
                     await self._call("switch", "turn_off", sw)
-                else:
-                    await self._call("number", "set_value", num, value=0)
+
+                # HA state is only a proxy for actual inverter execution.
+                # Verify physical battery power separately.
+                if not (number_zero and switch_off):
+                    pending.append(which)
             except Exception:
-                _LOGGER.exception("Failed requesting %s 0W hold", which)
+                pending.append(which)
+                _LOGGER.exception("Failed requesting %s 0W hold; will retry", which)
+
+        self.status = (
+            reason + ("; 0 W hold awaiting actuator-state verification: "
+                      + ", ".join(pending) if pending
+                      else "; actuator states report 0 W hold")
+        )
         self._current_mode = None
 
     async def tick(self, _now=None):
@@ -342,12 +365,9 @@ class DispatchCoordinator:
                     )
                     self.status = f"Shadow | {summary}{self._switch_summary(proposed)}"
                     self._current_mode = None
-                    self._safe_stop_attempted = False
                     return
 
                 if proposed == "Hold":
-                    if self._current_mode != "Hold":
-                        self._safe_stop_attempted = False
                     await self._safe_stop("HAEO planned battery hold")
                     self._current_mode = "Hold"
                     self.leaf_command_w = 0
@@ -358,14 +378,12 @@ class DispatchCoordinator:
                         "tesla", tesla, force_write=self._current_mode != proposed
                     )
                     self._current_mode = proposed
-                    self._safe_stop_attempted = False
                 else:
                     await self._dispatch("leaf", leaf)
                     await self._dispatch(
                         "tesla", tesla, force_write=self._current_mode != proposed
                     )
                     self._current_mode = proposed
-                    self._safe_stop_attempted = False
 
                 # Report the same decision in either mode; extra details only
                 # when they explain an actual actuator write/skip.
@@ -377,6 +395,6 @@ class DispatchCoordinator:
                 if self.enabled:
                     await self._safe_stop("Dispatch invalid")
                     # Preserve the reason for the fault after _safe_stop.
-                    self.status = f"Error | {exc} | 0 W hold requested"
+                    self.status = f"Error | {exc} | {self.status}"
             finally:
                 self.update()
