@@ -15,6 +15,10 @@ PLAN_MAX_AGE_SECONDS = 900
 GRID_TOLERANCE_W = 100
 BATTERY_TOLERANCE_W = 80
 
+class PlanInputError(ValueError):
+    """HAEO input is invalid; eligible for the configured fallback."""
+
+
 def clamp(value, low, high):
     return max(low, min(high, value))
 
@@ -383,7 +387,10 @@ class DispatchCoordinator:
             return
         async with self._running:
             try:
-                grid, leaf, tesla, actual_leaf, _actual_tesla = self._read_inputs()
+                try:
+                    grid, leaf, tesla, actual_leaf, _actual_tesla = self._read_inputs()
+                except (ValueError, TypeError) as input_error:
+                    raise PlanInputError(str(input_error)) from input_error
                 proposed = self._select_mode(grid, leaf, tesla)
                 summary = self._decision_summary(proposed, leaf, tesla)
                 self.mode = proposed if self.enabled else "Disabled"
@@ -430,14 +437,7 @@ class DispatchCoordinator:
                     # Only bad HAEO inputs/plans use the configured fallback.
                     # Hardware command failures retain forced 0 W Hold.
                     # This avoids switching a battery to auto on a write error.
-                    if isinstance(exc, ValueError) and (
-                        "unavailable:" in str(exc)
-                        or "plan stale" in str(exc)
-                        or "not numeric:" in str(exc)
-                        or "must be HAEO kW" in str(exc)
-                        or "needs W or kW" in str(exc)
-                        or "nonfinite or implausibly large" in str(exc)
-                    ):
+                    if isinstance(exc, PlanInputError):
                         await self._fallback(f"HAEO inputs invalid: {exc}")
                     else:
                         await self._safe_stop(f"Dispatch fault: {exc}")
