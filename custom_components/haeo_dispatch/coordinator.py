@@ -387,7 +387,8 @@ class DispatchCoordinator:
 
                 # Report the same decision in either mode; extra details only
                 # when they explain an actual actuator write/skip.
-                self.status = summary + self._switch_summary(proposed)
+                if proposed != "Hold":
+                    self.status = summary + self._switch_summary(proposed)
             except Exception as exc:
                 _LOGGER.warning("HAEO dispatch tick failed: %s", exc)
                 self.mode = "Error"
