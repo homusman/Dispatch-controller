@@ -345,6 +345,39 @@ class DispatchCoordinator:
         )
         self._current_mode = None
 
+    async def _fallback(self, reason):
+        """Apply the configured fallback when the HAEO plan is invalid.
+
+        Fallback is attempted again on every tick. Failed actuator commands
+        remain visible; an attempted command is never reported as verified.
+        """
+        fallback_mode = self.config.get("fallback_mode", "hold")
+        if fallback_mode != "self_use":
+            await self._safe_stop(reason + " | fallback Hold")
+            return
+
+        pending = []
+        for which in ("leaf", "tesla"):
+            switch = self.config[which + "_switch"]
+            state = self.hass.states.get(switch)
+            try:
+                if state is None or state.state != "on":
+                    await self._call("switch", "turn_on", switch)
+                if not self.hass.states.is_state(switch, "on"):
+                    pending.append(which)
+            except Exception:
+                pending.append(which)
+                _LOGGER.exception("Failed requesting %s self-use fallback; will retry", which)
+
+        self.leaf_command_w = None
+        self.tesla_command_w = None
+        self._current_mode = None
+        self.status = (
+            reason + " | fallback Self-use"
+            + (" | awaiting actuator-state verification: " + ", ".join(pending)
+               if pending else " | both switches report ON")
+        )
+
     async def tick(self, _now=None):
         if self._running.locked():
             return
@@ -394,8 +427,20 @@ class DispatchCoordinator:
                 self.mode = "Error"
                 self.status = f"Error | {exc}"
                 if self.enabled:
-                    await self._safe_stop("Dispatch invalid")
-                    # Preserve the reason for the fault after _safe_stop.
-                    self.status = f"Error | {exc} | {self.status}"
+                    # Only bad HAEO inputs/plans use the configured fallback.
+                    # Hardware command failures retain forced 0 W Hold.
+                    # This avoids switching a battery to auto on a write error.
+                    if isinstance(exc, ValueError) and (
+                        "unavailable:" in str(exc)
+                        or "plan stale" in str(exc)
+                        or "not numeric:" in str(exc)
+                        or "must be HAEO kW" in str(exc)
+                        or "needs W or kW" in str(exc)
+                        or "nonfinite or implausibly large" in str(exc)
+                    ):
+                        await self._fallback(f"HAEO inputs invalid: {exc}")
+                    else:
+                        await self._safe_stop(f"Dispatch fault: {exc}")
+                    self.status = f"Error | {self.status}"
             finally:
                 self.update()
