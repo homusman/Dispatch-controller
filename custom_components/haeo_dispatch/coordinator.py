@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import logging
 import math
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_track_time_interval, async_track_state_change_event
 from datetime import timedelta
 
 _LOGGER = logging.getLogger(__name__)
@@ -37,6 +37,7 @@ class DispatchCoordinator:
         self.tesla_command_w = None
         self._current_mode = None
         self._unsub = None
+        self._unsub_switches = None
         self._running = asyncio.Lock()
         self._listeners = []
         self._safe_stop_attempted = False
@@ -75,11 +76,24 @@ class DispatchCoordinator:
         self._unsub = async_track_time_interval(
             self.hass, self.tick, timedelta(seconds=TICK_SECONDS)
         )
+        self._unsub_switches = async_track_state_change_event(
+            self.hass,
+            [self.config["leaf_switch"], self.config["tesla_switch"]],
+            self._on_switch_changed,
+        )
 
     async def stop(self):
         if self._unsub:
             self._unsub()
             self._unsub = None
+        if self._unsub_switches:
+            self._unsub_switches()
+            self._unsub_switches = None
+
+    def _on_switch_changed(self, _event):
+        # The physical inverter mode can change outside the dispatcher.
+        # Reconcile or update the shadow preview without waiting 20 seconds.
+        self.hass.async_create_task(self.tick())
 
     def _raw(self, field):
         entity_id = self.config[field]
@@ -197,6 +211,25 @@ class DispatchCoordinator:
             )
         return " | ".join(parts)
 
+    def _switch_summary(self, mode):
+        """Compare requested and actual switch states in the status line."""
+        expected = {
+            "leaf": "on" if mode == "Self-use" else "off",
+            "tesla": "off",
+        }
+        parts = []
+        for which, label in (("leaf", "Solis"), ("tesla", "Fronius")):
+            entity_id = self.config[which + "_switch"]
+            state = self.hass.states.get(entity_id)
+            actual = state.state if state else "missing"
+            if actual not in ("on", "off"):
+                parts.append(f"{label} switch {actual}")
+            elif actual != expected[which]:
+                parts.append(
+                    f"{label} switch {actual} (expected {expected[which]})"
+                )
+        return (" | " + "; ".join(parts)) if parts else ""
+
     async def _call(self, domain, service, entity_id, **data):
         await self.hass.services.async_call(
             domain, service, {"entity_id": entity_id, **data}, blocking=True
@@ -299,8 +332,15 @@ class DispatchCoordinator:
                 summary = self._decision_summary(proposed, leaf, tesla)
                 self.mode = proposed if self.enabled else "Disabled"
                 if not self.enabled:
-                    # Same proposed decision as live mode, but no service calls.
-                    self.status = f"Shadow | {summary}"
+                    # Preview the intended commands, never imply they were sent.
+                    self.leaf_command_w = (
+                        None if proposed == "Self-use" else
+                        (0 if proposed == "Hold" else self._limits("leaf", leaf))
+                    )
+                    self.tesla_command_w = (
+                        0 if proposed == "Hold" else self._limits("tesla", tesla)
+                    )
+                    self.status = f"Shadow | {summary}{self._switch_summary(proposed)}"
                     self._current_mode = None
                     self._safe_stop_attempted = False
                     return
@@ -329,7 +369,7 @@ class DispatchCoordinator:
 
                 # Report the same decision in either mode; extra details only
                 # when they explain an actual actuator write/skip.
-                self.status = summary
+                self.status = summary + self._switch_summary(proposed)
             except Exception as exc:
                 _LOGGER.warning("HAEO dispatch tick failed: %s", exc)
                 self.mode = "Error"
