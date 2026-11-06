@@ -1,6 +1,6 @@
 # HAEO Dispatch Controller
 
-**v0.2.4 — HAEO owns the economic decisions.** This custom HACS integration translates HAEO battery power targets into Solis and Fronius commands. It does **not** implement proportional grid feedback, battery reallocation, or a second optimization loop.
+**v0.2.5 — HAEO owns the economic decisions.** This custom HACS integration translates HAEO battery power targets into Solis and Fronius commands. It does **not** implement proportional grid feedback, battery reallocation, or a second optimization loop.
 
 ## How it works
 
@@ -33,6 +33,13 @@ Example HAEO sensor IDs (assuming the elements are named Grid, Leaf and Tesla): 
 
 Home Assistant → Settings → Devices & services → HAEO Dispatch Controller → **Configure**. The options flow lets you change all sensor mappings, sign conventions and actuator entities after installation. Settings changes reload the integration in shadow mode; **Dispatch enabled** must be turned on again explicitly. Do not confuse the hub/device screen with the integration entry's Configure button.
 
+## v0.2.5 reload and mode-state fixes
+
+- Fixed integration reload/unload on Home Assistant versions where `ConfigEntry.async_unload_callbacks` does not exist. Registered unload callbacks are managed by Home Assistant.
+- In **Shadow**, the command sensors now preview the calculated setpoints so that Fronius/Tesla no longer appears unavailable merely because the dispatcher has not written a command. **Solis/Leaf has no numeric command in Self-use**, since its hardware loop is active; an unavailable command reading there is intentional.
+- Status appends a concise switch-state mismatch when either actual Self-use switch differs from the planned mode, including when manually changed. The dispatcher subscribes to switch-state changes, so it can update the Shadow status or reconcile the live mode without waiting for its next regular 20-second tick.
+- When Dispatch is enabled, a manually changed inverter mode is subject to automatic reconciliation; **switch Dispatch OFF before making intentional manual adjustments**. The disable action still requests 0 W hold by design.
+
 ## Controls and diagnostics
 
 - **Dispatch enabled** switch: OFF at startup. When disabled, the controller uses **Shadow** status to show the exact decision it would make, without writing to the inverters.
@@ -52,7 +59,7 @@ Hold | Leaf 0 W | Tesla 0 W
 Error | tesla actuator unavailable: number.xxx | 0 W hold requested
 ```
 
-Shadow mode performs the same actuator min/max evaluation as live mode, but makes **no inverter service calls**. The clamp summaries show the actual requested setpoint when actuator limits apply. No SoC-based clipping is performed by the dispatcher; inverter/BMS protections remain authoritative.
+Shadow mode performs the same actuator min/max evaluation as live mode, but makes **no inverter service calls**. The command sensor readings in Shadow are predictions, not evidence of a dispatched command. The clamp summaries show the actual requested setpoint when actuator limits apply. No SoC-based clipping is performed by the dispatcher; inverter/BMS protections remain authoritative.
 
 ## Mode transitions
 
