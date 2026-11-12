@@ -8,12 +8,16 @@ import math
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval, async_track_state_change_event
 from datetime import timedelta
+from .mode import (
+    DEFAULT_GRID_DEADBAND_W,
+    DEFAULT_GRID_HYSTERESIS_W,
+    nonnegative_watts,
+    select_mode,
+)
 
 _LOGGER = logging.getLogger(__name__)
 TICK_SECONDS = 20
 PLAN_MAX_AGE_SECONDS = 900
-GRID_TOLERANCE_W = 100
-BATTERY_TOLERANCE_W = 80
 
 class PlanInputError(ValueError):
     """HAEO input is invalid; eligible for the configured fallback."""
@@ -29,6 +33,13 @@ class DispatchCoordinator:
         self.hass = hass
         self.entry = entry
         self.config = {**entry.data, **entry.options}
+        self.grid_deadband_w = nonnegative_watts(
+            self.config.get("grid_deadband_w", DEFAULT_GRID_DEADBAND_W)
+        )
+        self.grid_hysteresis_w = nonnegative_watts(
+            self.config.get("grid_hysteresis_w", DEFAULT_GRID_HYSTERESIS_W)
+        )
+        self._selected_mode = None
         self.enabled = False  # An explicit action is required before any writes.
         self.mode = "Disabled"
         self.status = "Observation only; dispatch disabled"
@@ -154,11 +165,11 @@ class DispatchCoordinator:
         return grid, leaf, tesla, actual_leaf, actual_tesla
 
     def _select_mode(self, grid, leaf, tesla):
-        if abs(leaf) <= BATTERY_TOLERANCE_W and abs(tesla) <= BATTERY_TOLERANCE_W:
-            return "Hold"
-        if abs(grid) <= GRID_TOLERANCE_W:
-            return "Self-use"
-        return "Arbitrage"
+        self._selected_mode = select_mode(
+            grid, leaf, tesla, self._selected_mode,
+            self.grid_deadband_w, self.grid_hysteresis_w,
+        )
+        return self._selected_mode
 
     def _limits(self, which, target):
         """Enforce exposed actuator bounds only; never impose SoC cutoffs."""
@@ -313,6 +324,7 @@ class DispatchCoordinator:
         Retry failed commands after an actuator recovers rather than treating
         a previous service-call attempt as a completed safe stop.
         """
+        self._selected_mode = None
         pending = []
         for which in ("leaf", "tesla"):
             num = self.config[which + "_number"]
@@ -355,6 +367,7 @@ class DispatchCoordinator:
         Fallback is attempted again on every tick. Failed actuator commands
         remain visible; an attempted command is never reported as verified.
         """
+        self._selected_mode = None
         fallback_mode = self.config.get("fallback_mode", "hold")
         if fallback_mode != "self_use":
             await self._safe_stop(reason + " | fallback Hold")
@@ -430,6 +443,7 @@ class DispatchCoordinator:
                 if proposed != "Hold":
                     self.status = summary + self._switch_summary(proposed)
             except Exception as exc:
+                self._selected_mode = None
                 _LOGGER.warning("HAEO dispatch tick failed: %s", exc)
                 self.mode = "Error"
                 self.status = f"Error | {exc}"
@@ -444,3 +458,4 @@ class DispatchCoordinator:
                     self.status = f"Error | {self.status}"
             finally:
                 self.update()
+

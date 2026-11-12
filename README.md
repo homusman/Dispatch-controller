@@ -9,8 +9,8 @@ HAEO publishes its current optimized active-power targets for the grid, Leaf bat
 | Mode | Conditions | Solis / Leaf | Fronius / Tesla |
 | --- | --- | --- | --- |
 | **Hold** | Both HAEO battery targets near 0 W | Forced 0 W | Forced 0 W |
-| **Self-use** | Otherwise HAEO grid net target near 0 W | Native Solis hardware self-use | HAEO's **Tesla** signed power target |
-| **Arbitrage** | Otherwise (nonzero HAEO grid target) | HAEO's **Leaf** signed target | HAEO's **Tesla** signed target |
+| **Self-use** | Grid target within the configured switching threshold | Native Solis hardware self-use | HAEO's **Tesla** signed power target |
+| **Arbitrage** | Grid target beyond the configured switching threshold | HAEO's **Leaf** signed target | HAEO's **Tesla** signed target |
 
 Hold has priority when both individual battery targets are near zero. HAEO grid active power is **positive import / negative export**; HAEO battery active power is **positive discharge / negative charge**, in kW. Inverter actuator numbers use the same battery power sign, in W.
 
@@ -63,6 +63,17 @@ Shadow mode performs the same actuator min/max evaluation as live mode, but make
 
 ## Mode transitions
 
+The Configure page exposes **Grid deadband** and **Grid hysteresis** in watts.
+Deadband defaults to 100 W and hysteresis defaults to 100 W, including for existing entries.
+From startup, Hold or Self-use, Arbitrage requires planned import or export above
+deadband plus hysteresis. Once in Arbitrage, the controller returns to Self-use at
+deadband or below. At the defaults, a 150 W target stays in Self-use, 201 W enters
+Arbitrage, and 100 W returns to Self-use. Setting hysteresis to zero restores a
+single threshold. Both battery targets within 80 W still select Hold first.
+
+Mode selection uses the same hysteresis in Shadow and live operation. Stopping
+dispatch or encountering an input or actuator error resets its mode memory.
+
 On entry to Self-use or Arbitrage, the controller reasserts the Fronius/Tesla requested power target even if the Home Assistant Number already displays that setpoint. It avoids repeated writes when the displayed setpoint is unchanged. A successful HA service call doesn't prove that the inverter physically applied the request; verify actual battery power during commissioning.
 
 ## Safety and commissioning
@@ -86,3 +97,4 @@ Reference: [HAEO data-update documentation](https://github.com/hass-energy/haeo/
 ## Next mini-project
 
 Improve the HAEO load forecast: separate baseline household load from unpredictable loads such as the EV charger; give HAEO the live changes to trigger economically informed replanning. Keep grid-error feedback in this integration **disabled/removed** unless a concrete control gap is demonstrated.
+

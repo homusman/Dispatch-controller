@@ -21,9 +21,53 @@
           "leaf_number": "Solis forced battery power number",
           "tesla_number": "Fronius forced battery power number",
           "leaf_switch": "Solis Self-Use Mode switch",
-          "tesla_switch": "Fronius Self-Use Mode switch"
+          "tesla_switch": "Fronius Self-Use Mode switch",
+          "grid_deadband_w": "Grid deadband (W)",
+          "grid_hysteresis_w": "Grid hysteresis (W)"
+        },
+        "data_descriptions": {
+          "grid_deadband_w": "Return to Self-use when the absolute planned grid power is at or below this value.",
+          "grid_hysteresis_w": "Additional watts above the deadband needed to enter Arbitrage. Zero disables hysteresis."
         }
       }
+    },
+    "error": {
+      "invalid_grid_threshold": "Enter a finite nonnegative power in watts."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure HAEO dispatch",
+        "description": "Configure plan inputs, actuator mappings and grid mode thresholds.",
+        "data": {
+          "name": "Controller name",
+          "grid_positive_import": "Measured grid sensor: positive means import",
+          "leaf_positive_discharge": "Measured Leaf battery sensor: positive means discharge",
+          "tesla_positive_discharge": "Measured Tesla battery sensor: positive means discharge",
+          "grid_plan": "HAEO grid active power (kW, positive import)",
+          "leaf_plan": "HAEO Leaf active power (kW, positive discharge)",
+          "tesla_plan": "HAEO Tesla active power (kW, positive discharge)",
+          "grid_actual": "Measured grid power (W or kW)",
+          "leaf_actual": "Measured Solis/Leaf battery power (W or kW)",
+          "tesla_actual": "Measured Fronius/Tesla battery power (W or kW)",
+          "leaf_soc": "Measured Leaf state of charge (%)",
+          "tesla_soc": "Measured Tesla state of charge (%)",
+          "leaf_number": "Solis forced battery power number",
+          "tesla_number": "Fronius forced battery power number",
+          "leaf_switch": "Solis Self-Use Mode switch",
+          "tesla_switch": "Fronius Self-Use Mode switch",
+          "grid_deadband_w": "Grid deadband (W)",
+          "grid_hysteresis_w": "Grid hysteresis (W)"
+        },
+        "data_descriptions": {
+          "grid_deadband_w": "Return to Self-use when the absolute planned grid power is at or below this value.",
+          "grid_hysteresis_w": "Additional watts above the deadband needed to enter Arbitrage. Zero disables hysteresis."
+        }
+      }
+    },
+    "error": {
+      "invalid_grid_threshold": "Enter a finite nonnegative power in watts."
     }
   }
 }
