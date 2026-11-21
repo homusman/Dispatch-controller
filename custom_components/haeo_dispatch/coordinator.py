@@ -14,6 +14,7 @@ from .mode import (
     nonnegative_watts,
     select_mode,
 )
+from .const import TELEMETRY_FIELDS
 
 _LOGGER = logging.getLogger(__name__)
 TICK_SECONDS = 20
@@ -63,6 +64,8 @@ class DispatchCoordinator:
         self.tesla_actuator_w = None
         self.tesla_switch_state = None
         self._tesla_self_use_conflicts = 0
+        self.telemetry_errors = {}
+        self.last_fault = None
 
     @property
     def device_info(self):
@@ -111,7 +114,9 @@ class DispatchCoordinator:
         self.hass.async_create_task(self.tick())
 
     def _raw(self, field):
-        entity_id = self.config[field]
+        entity_id = self.config.get(field)
+        if not entity_id:
+            raise ValueError(f"{field} not configured")
         state = self.hass.states.get(entity_id)
         if state is None or state.state in ("unknown", "unavailable", "none", ""):
             raise ValueError(f"{field} unavailable: {entity_id}")
@@ -146,23 +151,32 @@ class DispatchCoordinator:
         grid = self._plan_watts("grid_plan")
         leaf = self._plan_watts("leaf_plan")
         tesla = self._plan_watts("tesla_plan")
-        actual_grid = self._watts("grid_actual")
-        actual_leaf = self._watts("leaf_actual")
-        self._watts("tesla_actual")  # Require telemetry for both batteries.
-        if not self.config["grid_positive_import"]:
-            actual_grid *= -1
-        if not self.config["leaf_positive_discharge"]:
-            actual_leaf *= -1
-        # Tesla telemetry sign is validated here; it is useful for diagnostics.
-        actual_tesla = self._watts("tesla_actual")
-        if not self.config["tesla_positive_discharge"]:
-            actual_tesla *= -1
         # Battery SoC is deliberately not an interlock or required input here.
         # Inverter / BMS enforces battery constraints and calibration behavior.
-        self.grid_target_w, self.grid_actual_w = grid, actual_grid
-        self.grid_error_w = actual_grid - grid  # Positive -> need more discharge.
+        self.grid_target_w = grid
         self.leaf_plan_w, self.tesla_plan_w = leaf, tesla
-        return grid, leaf, tesla, actual_leaf, actual_tesla
+        return grid, leaf, tesla
+
+    def _read_telemetry(self):
+        """Diagnostic readings never gate valid HAEO commands or become zeros."""
+        self.telemetry_errors = {}
+        self.grid_actual_w = None
+        self.grid_error_w = None
+        for field in TELEMETRY_FIELDS:
+            if not self.config.get(field):
+                continue
+            try:
+                value = self._watts(field)
+            except (ValueError, TypeError) as exc:
+                self.telemetry_errors[field] = str(exc)
+                continue
+            if field == "grid_actual":
+                self.grid_actual_w = value if self.config["grid_positive_import"] else -value
+        if self.grid_actual_w is not None and self.grid_target_w is not None:
+            self.grid_error_w = self.grid_actual_w - self.grid_target_w
+
+    def _telemetry_summary(self):
+        return " | Telemetry missing: " + ", ".join(self.telemetry_errors) if self.telemetry_errors else ""
 
     def _select_mode(self, grid, leaf, tesla):
         self._selected_mode = select_mode(
@@ -401,9 +415,10 @@ class DispatchCoordinator:
         async with self._running:
             try:
                 try:
-                    grid, leaf, tesla, actual_leaf, _actual_tesla = self._read_inputs()
+                    grid, leaf, tesla = self._read_inputs()
                 except (ValueError, TypeError) as input_error:
                     raise PlanInputError(str(input_error)) from input_error
+                self._read_telemetry()
                 proposed = self._select_mode(grid, leaf, tesla)
                 summary = self._decision_summary(proposed, leaf, tesla)
                 self.mode = proposed if self.enabled else "Disabled"
@@ -416,7 +431,7 @@ class DispatchCoordinator:
                     self.tesla_command_w = (
                         0 if proposed == "Hold" else self._limits("tesla", tesla)
                     )
-                    self.status = f"Shadow | {summary}{self._switch_summary(proposed)}"
+                    self.status = f"Shadow | {summary}{self._switch_summary(proposed)}{self._telemetry_summary()}"
                     self._current_mode = None
                     return
 
@@ -442,7 +457,13 @@ class DispatchCoordinator:
                 # when they explain an actual actuator write/skip.
                 if proposed != "Hold":
                     self.status = summary + self._switch_summary(proposed)
+                self.status += self._telemetry_summary()
             except Exception as exc:
+                self.last_fault = {
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "reason": str(exc),
+                    "kind": "plan_input" if isinstance(exc, PlanInputError) else "dispatch",
+                }
                 self._selected_mode = None
                 _LOGGER.warning("HAEO dispatch tick failed: %s", exc)
                 self.mode = "Error"

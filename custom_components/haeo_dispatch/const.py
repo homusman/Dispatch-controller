@@ -1,5 +1,6 @@
 """Constants for HAEO Dispatch."""
 DOMAIN = "haeo_dispatch"
+TELEMETRY_FIELDS = ("grid_actual", "leaf_actual", "tesla_actual")
 PLATFORMS = ["switch", "number", "select", "sensor"]
 FIELD_NAMES = {
     "grid_plan": "HAEO grid active power (kW; +import)",
@@ -18,3 +19,4 @@ FIELD_NAMES = {
 GRID_PLAN = "grid_plan"
 LEAF_PLAN = "leaf_plan"
 TESLA_PLAN = "tesla_plan"
+

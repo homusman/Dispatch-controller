@@ -3,7 +3,7 @@ from __future__ import annotations
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.helpers import selector
-from .const import DOMAIN
+from .const import DOMAIN, TELEMETRY_FIELDS
 from .mode import DEFAULT_GRID_DEADBAND_W, DEFAULT_GRID_HYSTERESIS_W, nonnegative_watts
 
 FIELDS = [
@@ -36,7 +36,8 @@ def schema(values=None):
         ),
     }
     for key, _label, domain in FIELDS:
-        fields[vol.Required(key, default=values[key] if key in values else vol.UNDEFINED)] = selector.EntitySelector(
+        marker = vol.Optional if key in TELEMETRY_FIELDS else vol.Required
+        fields[marker(key, default=values.get(key) or vol.UNDEFINED)] = selector.EntitySelector(
             selector.EntitySelectorConfig(domain=domain)
         )
     return vol.Schema(fields)
@@ -84,7 +85,9 @@ class HAEOOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             errors = validate_grid_settings(user_input)
             if not errors:
-                return self.async_create_entry(title="", data=user_input)
+                return self.async_create_entry(title="", data={
+                    **user_input, **{key: user_input.get(key) for key in TELEMETRY_FIELDS}
+                })
         current = user_input if user_input is not None else {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_form(
             step_id="init", data_schema=schema(current), errors=errors,

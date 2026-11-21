@@ -1,6 +1,6 @@
 """Check normal dispatcher ticks and settings with simulated HA entities."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import importlib
 from pathlib import Path
 import sys
@@ -95,6 +95,48 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.controller.mode, "Self-use")
         self.assertTrue(self.states.is_state("switch.leaf", "on"))
 
+    async def test_telemetry_outages_keep_valid_commands_and_report_unknown_not_zero(self):
+        self.controller.enabled = True
+        self.grid(-10000)
+        self.states.values["sensor.leaf_plan"] = state(4.21, unit_of_measurement="kW")
+        for field in ("grid_actual", "leaf_actual", "tesla_actual"):
+            self.states.values["sensor." + field].state = "unavailable"
+        await self.controller.tick()
+        self.assertEqual(self.controller.mode, "Arbitrage")
+        self.assertEqual(self.controller.leaf_command_w, 4210)
+        self.assertEqual(self.controller.tesla_command_w, -3500)
+        self.assertIsNone(self.controller.grid_actual_w)
+        self.assertIsNone(self.controller.grid_error_w)
+        self.assertEqual(set(self.controller.telemetry_errors), {"grid_actual", "leaf_actual", "tesla_actual"})
+        self.assertNotIn("fallback", self.controller.status)
+        self.assertFalse(any(service == "turn_on" for _, service, _ in self.calls))
+        for field in ("grid_actual", "leaf_actual", "tesla_actual"):
+            self.states.values["sensor." + field] = state(0.5, unit_of_measurement="kW")
+        await self.controller.tick()
+        self.assertEqual(self.controller.telemetry_errors, {})
+        self.assertEqual(self.controller.grid_actual_w, 500)
+        self.assertEqual(self.controller.grid_error_w, 10500)
+
+    async def test_plan_outage_and_stale_plan_still_fall_back_and_latch_reason(self):
+        self.controller.enabled = True
+        self.controller.config["fallback_mode"] = "self_use"
+        self.grid(-10000)
+        self.states.values["sensor.grid_plan"].state = "unavailable"
+        await self.controller.tick()
+        self.assertEqual(self.controller.mode, "Error")
+        self.assertTrue(self.states.is_state("switch.leaf", "on"))
+        self.assertTrue(self.states.is_state("switch.tesla", "on"))
+        self.assertEqual(self.controller.last_fault["kind"], "plan_input")
+        reason = dict(self.controller.last_fault)
+        self.grid(-10000)
+        await self.controller.tick()
+        self.assertEqual(self.controller.mode, "Arbitrage")
+        self.assertEqual(self.controller.last_fault, reason)
+        self.states.values["sensor.grid_plan"].last_reported -= timedelta(minutes=16)
+        await self.controller.tick()
+        self.assertEqual(self.controller.mode, "Error")
+        self.assertIn("stale", self.controller.last_fault["reason"])
+
     async def test_invalid_plan_resets_hysteresis_in_shadow_and_live_modes(self):
         for enabled in (False, True):
             self.controller.enabled = enabled
@@ -152,6 +194,16 @@ class SettingsTests(unittest.TestCase):
         result = flow.schema()(self.valid_input())
         self.assertEqual(result["grid_deadband_w"], 100)
         self.assertEqual(result["grid_hysteresis_w"], 100)
+
+    def test_telemetry_mappings_are_optional(self):
+        data = self.valid_input()
+        for key in ("grid_actual", "leaf_actual", "tesla_actual"):
+            data.pop(key)
+        result = flow.schema()(data)
+        self.assertNotIn("grid_actual", result)
+        fields = voluptuous_serialize.convert(flow.schema(), custom_serializer=cv.custom_serializer)
+        actual = next(field for field in fields if field["name"] == "grid_actual")
+        self.assertFalse(actual["required"])
 
     def test_settings_validate_fractional_and_invalid_thresholds(self):
         for key in ("grid_deadband_w", "grid_hysteresis_w"):

@@ -26,3 +26,12 @@ class DispatchSensor(DispatchEntity, SensorEntity):
     @property
     def native_value(self):
         return getattr(self.coordinator, self._key)
+
+    @property
+    def extra_state_attributes(self):
+        if self._key != "status":
+            return None
+        return {
+            "telemetry_errors": dict(self.coordinator.telemetry_errors),
+            "last_fault": self.coordinator.last_fault,
+        }

@@ -1,10 +1,14 @@
-# Configurable grid deadband and hysteresis
+# HAEO Dispatch Controller v0.2.12
 
-The controller's Configure page now exposes two grid mode settings in watts.
+Fixes dispatch interruptions caused by unavailable diagnostic-only grid/battery
+power sensors. Valid HAEO targets continue to execute; missing telemetry is
+reported as unknown with reasons in Dispatch status attributes.
 
-- **Grid deadband** defaults to **100 W**. Arbitrage returns to Self-use when the absolute planned grid target reaches this value or lower.
-- **Grid hysteresis** defaults to **100 W**. From Self-use, Hold, or startup, Arbitrage requires an absolute planned grid target greater than deadband plus hysteresis. At the defaults, the entry threshold is 200 W.
+- Measured grid, Solis and Fronius power mappings are optional and removable.
+- No stale or zero substitutes are used for missing measured grid power.
+- Dispatch status retains the last plan/actuator fault after recovery.
+- Plan availability/freshness checks, fallback policy and actuator fault handling
+  remain active. Upstream HAEO plan outages still trigger the configured fallback.
 
-Both import and export use these thresholds. Setting hysteresis to zero gives a single switching threshold. Existing entries receive the defaults automatically. Hold still applies when both planned battery powers are within 80 W of zero.
-
-Update the HAEO Dispatch Controller in HACS, restart Home Assistant, and open **Settings → Devices & services → HAEO Dispatch Controller → Configure** to adjust the values. Configuration reloads the controller into its disabled state. Check its shadow preview and enable dispatch when ready.
+Update through HACS and restart Home Assistant. Dispatch starts disabled; inspect
+Shadow mode and explicitly enable it when ready.

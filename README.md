@@ -86,7 +86,7 @@ This is experimental software, not an export limiter or a BMS safety controller.
 - Dispatch values are clamped only to the Number actuator's exposed min/max. **No SoC interlocks are enforced here**: battery/inverter firmware must prevent unsafe charging or discharging and may allow 0%/99.9% recalibration. Configure battery operating reserves in HAEO or physical battery controls as appropriate.
 - If an input becomes unavailable or a HAEO plan has not reported for over 15 minutes, the controller requests zero-power hold while enabled. Check actual inverter state: network/service errors may prevent these requests.
 - Explicitly switching dispatch OFF requests zero-power hold on both batteries. Starting/restarting Home Assistant leaves dispatch OFF **without** transmitting a new inverter command.
-- Measured battery/grid power inputs remain available for diagnostics and sanity checks, but the dispatcher does not use their power errors to tune commands.
+- Measured battery/grid power inputs are optional diagnostics. Missing, unavailable or invalid telemetry is reported without interrupting valid HAEO commands. The dispatcher does not use their power errors to tune commands.
 
 ## Faster HAEO updates
 
@@ -98,3 +98,25 @@ Reference: [HAEO data-update documentation](https://github.com/hass-energy/haeo/
 
 Improve the HAEO load forecast: separate baseline household load from unpredictable loads such as the EV charger; give HAEO the live changes to trigger economically informed replanning. Keep grid-error feedback in this integration **disabled/removed** unless a concrete control gap is demonstrated.
 
+
+
+## v0.2.12 — diagnostic telemetry does not interrupt dispatch
+
+Actual grid and battery power mappings are optional diagnostics. A missing sensor,
+invalid unit or unavailable reading is reported in Dispatch status and its
+`telemetry_errors` attribute. Measured grid power and grid tracking error become
+unknown when missing, rather than retaining stale values or reporting zero.
+
+A valid HAEO plan continues to dispatch without these readings. Configure can
+clear an obsolete actual-power mapping. A measured load sensor is not required.
+This does not add grid feedback or substitute measured power for the HAEO plan.
+
+The three HAEO plan sensors remain required, with the existing 15-minute freshness
+limit. Missing/stale plans still use the configured fallback; actuator faults and
+explicit disable still request 0 W hold. This release does not fix upstream HAEO
+plan outages. Dispatch status now retains `last_fault` (time, kind, reason) after
+recovery, making short failures diagnosable. It resets when the integration reloads.
+
+Update in HACS, restart, inspect Shadow status and explicitly enable dispatch.
+Choose a real net-grid-power sensor if you want measured-grid diagnostics; an
+obsolete template sensor need not be mapped.
